@@ -11,6 +11,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.1] - 2026-08-23
+
+### Fixed
+
+**"TV shows on iPhone but not on Mac" discovery failure**
+- Root cause: some routers (observed on an Airtel/Broadcom unit with IGMP
+  snooping) silently drop multicast packets *sent by* wireless clients. The
+  system mDNS daemon's multicast answers never reached a browsing Mac. iOS
+  still discovered the TV because a freshly opened Screen Mirroring menu sends
+  a QU ("unicast response requested") query and the daemon's unicast reply gets
+  through; macOS's permanent background `_airplay._tcp` browse sends only QM
+  queries, whose multicast answers the router ate.
+
+### Added
+
+- `UnicastMdnsResponder` — a compatibility mDNS responder that joins
+  224.0.0.251:5353, parses discovery queries itself (including name
+  compression), and answers every query about iMirror's services via **unicast**
+  straight back to the querier, regardless of the QU/QM bit (RFC 6762 §5.4
+  requires clients to accept this). Unicast is immune to the router's multicast
+  forwarding problem. Runs alongside the `NsdManager` registration, follows
+  collision renames, serves SRV/TXT/A additionals in the same packet so a
+  sender can resolve and connect from a single response, and handles legacy
+  (non-5353) queriers per RFC 6762 §6.7 (ID echo, repeated question, ≤10 s TTLs)
+- The responder ignores queries originating from **any** address this device
+  holds, not just the primary one. The system daemon probes each name before
+  registering and treats any answer as a conflict, so on a device with a second
+  active interface (an LG CreateBoard on Android 13 runs `wlan0` alongside a
+  WiFi-Direct `p2p-wlan0-1`, and the daemon probes on both) iMirror answered its
+  own probe and registered as "<name> (2)" while the responder still advertised
+  the original name — one device, two entries in the sender's AirPlay menu
+- `WifiManager.MulticastLock` held while advertising — many Android TV WiFi
+  chipsets filter inbound multicast in firmware unless an app holds this lock,
+  which would break discovery in the other direction (queries never heard)
+- 11 unit tests for the responder's DNS wire format (parsing with compression
+  pointers, response layout, TTL rules, case-insensitive matching, malformed
+  packet rejection, own-address filtering)
+- README Troubleshooting section covering the iPhone-works/Mac-doesn't symptom
+
+### Changed
+
+- AirPlay and RAOP TXT records are now built by shared helpers
+  (`MdnsService.airPlayTxtRecords`/`raopTxtRecords`) so both discovery paths
+  advertise identical capabilities
+
+---
+
 ## [1.0.0-beta.1] - 2026-06-14
 
 ### Added

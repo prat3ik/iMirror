@@ -177,14 +177,9 @@ class MdnsService(
             serviceType = SERVICE_TYPE_AIRPLAY
             port = AIRPLAY_PORT
 
-            // Core identity TXT records
-            setAttribute("deviceid", NetworkUtils.getMacAddress())
-            setAttribute("features", AIRPLAY_FEATURES)
-            setAttribute("model", AIRPLAY_MODEL)
-            setAttribute("srcvers", AIRPLAY_SERVER_VERSION)
-            setAttribute("vv", "2")                             // AirPlay protocol version 2
-            setAttribute("pi", NetworkUtils.getPersistentUuid(context))
-            setAttribute("flags", "0x4")                        // Screen-mirroring receiver
+            // Core identity TXT records — shared with UnicastMdnsResponder so both
+            // discovery paths advertise identical capabilities.
+            airPlayTxtRecords(context).forEach { (key, value) -> setAttribute(key, value) }
         }
 
         airPlayListener = createRegistrationListener(
@@ -223,15 +218,8 @@ class MdnsService(
             serviceType = SERVICE_TYPE_RAOP
             port = AIRPLAY_PORT
 
-            setAttribute("cn", "0,1,2,3")        // Cipher numbers (encryption types)
-            setAttribute("da", "true")             // Digest authentication capable
-            setAttribute("et", "0,3,5")            // Encryption types supported
-            setAttribute("md", "0,1,2")            // Metadata types supported
-            setAttribute("sv", "false")            // Software volume control
-            setAttribute("tp", "UDP")              // Transport for audio RTP
-            setAttribute("vn", "65537")            // Version number (required)
-            setAttribute("vs", AIRPLAY_SERVER_VERSION)
-            setAttribute("am", AIRPLAY_MODEL)
+            // TXT records — shared with UnicastMdnsResponder (see airPlayTxtRecords).
+            raopTxtRecords().forEach { (key, value) -> setAttribute(key, value) }
         }
 
         raopListener = createRegistrationListener(
@@ -332,5 +320,36 @@ class MdnsService(
 
         /** AirPlay server version — matches a real Apple TV for maximum compatibility. */
         private const val AIRPLAY_SERVER_VERSION = "220.68"
+
+        /**
+         * TXT records for the `_airplay._tcp` service.
+         *
+         * Single source of truth, used by BOTH discovery paths: the NsdManager
+         * registration in this class and [UnicastMdnsResponder]. If the two ever
+         * diverged, senders could see different capabilities depending on which
+         * response reached them first.
+         */
+        internal fun airPlayTxtRecords(context: Context): Map<String, String> = linkedMapOf(
+            "deviceid" to NetworkUtils.getMacAddress(),
+            "features" to AIRPLAY_FEATURES,
+            "model" to AIRPLAY_MODEL,
+            "srcvers" to AIRPLAY_SERVER_VERSION,
+            "vv" to "2",                                  // AirPlay protocol version 2
+            "pi" to NetworkUtils.getPersistentUuid(context),
+            "flags" to "0x4"                              // Screen-mirroring receiver
+        )
+
+        /** TXT records for the `_raop._tcp` (audio) service. See [airPlayTxtRecords]. */
+        internal fun raopTxtRecords(): Map<String, String> = linkedMapOf(
+            "cn" to "0,1,2,3",                            // Cipher numbers (encryption types)
+            "da" to "true",                               // Digest authentication capable
+            "et" to "0,3,5",                              // Encryption types supported
+            "md" to "0,1,2",                              // Metadata types supported
+            "sv" to "false",                              // Software volume control
+            "tp" to "UDP",                                // Transport for audio RTP
+            "vn" to "65537",                              // Version number (required)
+            "vs" to AIRPLAY_SERVER_VERSION,
+            "am" to AIRPLAY_MODEL
+        )
     }
 }

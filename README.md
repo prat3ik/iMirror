@@ -119,8 +119,22 @@ Senders: **iPhone**, **iPad**, and **Mac** running macOS 12 or newer.
 - **Same network required.** Apple TV can accept connections off-network via
   Apple's AWDL protocol; Android hardware cannot do AWDL.
 - **H.264 only** — HEVC is not implemented yet.
-- If your **router has AP isolation or multicast filtering** enabled, the TV will
-  not appear in the AirPlay menu at all. mDNS discovery needs multicast.
+- If your **router has AP isolation** enabled, the TV will not appear in the
+  AirPlay menu at all — AP isolation blocks all traffic between clients, and no
+  app can work around that.
+
+## Troubleshooting
+
+**The TV shows up on my iPhone but not on my Mac.**
+This was the classic symptom of a router that silently drops multicast packets
+*sent by* wireless clients (seen on several ISP-supplied routers with IGMP
+snooping or "Wireless Multicast Forwarding"). iOS discovery survives because a
+freshly opened Screen Mirroring menu requests a unicast reply; macOS keeps a
+permanent background browse whose multicast replies the router eats. Since
+v1.0.1 iMirror answers every discovery query via unicast as well, which is
+immune to the problem — update to v1.0.1 or newer and the TV should appear on
+the Mac within a few seconds. If it still doesn't, check for AP isolation
+(above) or toggle IGMP Snooping off in your router's LAN settings.
 
 ## Build from source
 
@@ -138,9 +152,12 @@ For a signed release build, supply your own keystore via `KEYSTORE_PATH`,
 ## How it works
 
 The app advertises `_airplay._tcp` and `_raop._tcp` over mDNS, presenting itself
-as an Apple TV so senders select the mirroring protocol. Encrypted H.264 arrives
-over TCP and is decoded by `MediaCodec` directly onto a `SurfaceView` with no
-intermediate copy.
+as an Apple TV so senders select the mirroring protocol. Discovery runs on two
+paths: the system `NsdManager` registration (announcements, goodbyes, conflict
+resolution) plus iMirror's own responder that answers every query via unicast,
+so the TV stays discoverable even on routers that drop client multicast.
+Encrypted H.264 arrives over TCP and is decoded by `MediaCodec` directly onto a
+`SurfaceView` with no intermediate copy.
 
 > **Contributor note:** the two mDNS registrations **must** stay serialized.
 > Android's `NsdManager` cannot hold two registrations in flight — the second

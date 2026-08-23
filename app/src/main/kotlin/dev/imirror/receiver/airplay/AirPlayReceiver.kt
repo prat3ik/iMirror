@@ -1,6 +1,7 @@
 package dev.imirror.receiver.airplay
 
 import android.content.Context
+import android.net.wifi.WifiManager
 import android.view.Surface
 import dev.imirror.receiver.airplay.handshake.AirPlayNtpClient
 import dev.imirror.receiver.airplay.handshake.AudioStreamServer
@@ -8,6 +9,7 @@ import dev.imirror.receiver.airplay.handshake.BufferedAudioServer
 import dev.imirror.receiver.airplay.handshake.MirrorStreamServer
 import dev.imirror.receiver.service.ProtocolState
 import dev.imirror.receiver.util.Logger
+import dev.imirror.receiver.util.NetworkUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -103,6 +105,12 @@ class AirPlayReceiver(
 
     // Child components
     private var mdnsService: MdnsService? = null
+    private var unicastResponder: UnicastMdnsResponder? = null
+
+    // Held while advertising so the WiFi driver delivers multicast to us. Many Android TV
+    // chipsets filter inbound multicast in firmware unless some app holds this lock —
+    // without it the mDNS daemon (and our responder) never hear sender queries at all.
+    private var multicastLock: WifiManager.MulticastLock? = null
     private var rtspHandler: RtspHandler? = null
     private var timingHandler: TimingHandler? = null
     private var videoDecoder: VideoDecoder? = null
@@ -174,6 +182,13 @@ class AirPlayReceiver(
             rtspHandler?.stop()
             timingHandler?.stop()
             mdnsService?.stop()
+            unicastResponder?.stop()
+            try {
+                multicastLock?.release()
+            } catch (e: Exception) {
+                Logger.w("Multicast lock release failed (non-fatal): ${e.message}")
+            }
+            multicastLock = null
             dacpClient.stop()
             releaseMediaComponents()
         } catch (e: Exception) {
@@ -201,12 +216,49 @@ class AirPlayReceiver(
     }
 
     private fun startMdnsService() {
+        acquireMulticastLock()
         mdnsService = MdnsService(
             context = context,
             onStateChange = { state -> emitState(state) },
-            onActualNameRegistered = { actualName -> onActualNameRegistered(actualName) }
+            onActualNameRegistered = { actualName ->
+                // Keep the unicast responder answering for the name the system
+                // daemon ACTUALLY registered (it may append " (2)" on collision).
+                unicastResponder?.updateInstanceName(actualName)
+                onActualNameRegistered(actualName)
+            }
         ).also { it.start(displayName.ifBlank { null }) }
+
+        // Compatibility responder for routers that drop client-originated multicast:
+        // answers every discovery query via unicast (see UnicastMdnsResponder docs).
+        // Runs for the whole receiver lifetime — sessions don't affect discovery.
+        unicastResponder = UnicastMdnsResponder(
+            displayName = displayName.ifBlank { NetworkUtils.getDeviceName(context) },
+            macAddress = NetworkUtils.getMacAddress(),
+            airPlayPort = MdnsService.AIRPLAY_PORT,
+            airPlayTxt = MdnsService.airPlayTxtRecords(context),
+            raopTxt = MdnsService.raopTxtRecords()
+        ).also { it.start() }
         Logger.d("mDNS service started")
+    }
+
+    /**
+     * Acquires the WiFi multicast lock for the advertising lifetime.
+     *
+     * Non-fatal on failure (e.g. Ethernet-only devices have no WifiManager):
+     * wired interfaces don't filter multicast, so the lock is simply unnecessary there.
+     */
+    private fun acquireMulticastLock() {
+        try {
+            val wifiManager =
+                context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            multicastLock = wifiManager?.createMulticastLock("iMirror-mdns")?.apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+            Logger.d("WiFi multicast lock acquired")
+        } catch (e: Exception) {
+            Logger.w("Could not acquire multicast lock (non-fatal): ${e.message}")
+        }
     }
 
     private fun startRtspHandler() {
