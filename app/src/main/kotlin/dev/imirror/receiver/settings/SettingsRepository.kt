@@ -108,6 +108,7 @@ class SettingsRepository(private val context: Context) {
         displayName        = this[Keys.DISPLAY_NAME]            ?: "Pratik AirPlay",
         airPlayEnabled     = this[Keys.AIRPLAY_ENABLED]         ?: true,
         airPlayPinAuthEnabled = this[Keys.AIRPLAY_PIN_AUTH]     ?: false,
+        autoOpenOnConnect  = this[Keys.AUTO_OPEN_ON_CONNECT]    ?: false,
         startOnBoot        = this[Keys.START_ON_BOOT]           ?: false,
         showDebugOverlay   = this[Keys.SHOW_DEBUG_OVERLAY]      ?: false,
         forceHighResolution = this[Keys.FORCE_HIGH_RESOLUTION]  ?: false,
@@ -122,6 +123,7 @@ class SettingsRepository(private val context: Context) {
         this[Keys.DISPLAY_NAME]         = settings.displayName
         this[Keys.AIRPLAY_ENABLED]      = settings.airPlayEnabled
         this[Keys.AIRPLAY_PIN_AUTH]     = settings.airPlayPinAuthEnabled
+        this[Keys.AUTO_OPEN_ON_CONNECT] = settings.autoOpenOnConnect
         this[Keys.START_ON_BOOT]        = settings.startOnBoot
         this[Keys.SHOW_DEBUG_OVERLAY]   = settings.showDebugOverlay
         this[Keys.FORCE_HIGH_RESOLUTION] = settings.forceHighResolution
@@ -138,6 +140,7 @@ class SettingsRepository(private val context: Context) {
         val DISPLAY_NAME        = stringPreferencesKey("display_name")
         val AIRPLAY_ENABLED     = booleanPreferencesKey("airplay_enabled")
         val AIRPLAY_PIN_AUTH    = booleanPreferencesKey("airplay_pin_auth")
+        val AUTO_OPEN_ON_CONNECT = booleanPreferencesKey("auto_open_on_connect")
         val START_ON_BOOT       = booleanPreferencesKey("start_on_boot")
         val SHOW_DEBUG_OVERLAY  = booleanPreferencesKey("show_debug_overlay")
         val FORCE_HIGH_RESOLUTION = booleanPreferencesKey("force_high_resolution")

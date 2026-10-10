@@ -51,6 +51,9 @@ data class AppSettings(
      */
     val startOnBoot: Boolean = false,
 
+    /** Opt-in: bring incoming connections to the screen when Android permits it. */
+    val autoOpenOnConnect: Boolean = false,
+
     // ─── Developer / Debug ─────────────────────────────────────────────────
     /**
      * Overlays a debug HUD on the streaming screen showing:

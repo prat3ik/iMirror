@@ -1,6 +1,10 @@
 package dev.imirror.receiver.ui
 
 import android.app.AlertDialog
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import android.widget.Toast
 import android.os.Bundle
 import dev.imirror.receiver.service.ServiceController
 import android.text.InputFilter
@@ -54,6 +58,7 @@ class SettingsFragment : Fragment() {
     private lateinit var rowMirrorAudio: View
     private lateinit var rowPinAuth: View
     private lateinit var rowStartOnBoot: View
+    private lateinit var rowAutoOpen: View
     private lateinit var rowDebugOverlay: View
     private lateinit var rowForceHighRes: View
     private lateinit var textVersionValue: TextView
@@ -89,6 +94,7 @@ class SettingsFragment : Fragment() {
         rowAirPlay          = view.findViewById(R.id.row_airplay)
         rowMirrorAudio      = view.findViewById(R.id.row_mirror_audio)
         rowPinAuth          = view.findViewById(R.id.row_pin_auth)
+        rowAutoOpen         = view.findViewById(R.id.row_auto_open)
         rowStartOnBoot      = view.findViewById(R.id.row_start_on_boot)
         rowDebugOverlay     = view.findViewById(R.id.row_debug_overlay)
         rowForceHighRes     = view.findViewById(R.id.row_force_high_res)
@@ -111,6 +117,7 @@ class SettingsFragment : Fragment() {
         configureToggleRow(rowAirPlay,      R.string.setting_airplay_enabled,    R.string.setting_airplay_subtitle)
         configureToggleRow(rowMirrorAudio,  R.string.setting_mirror_audio,       R.string.setting_mirror_audio_subtitle)
         configureToggleRow(rowPinAuth,      R.string.setting_pin_auth,           R.string.setting_pin_auth_subtitle)
+        configureToggleRow(rowAutoOpen, R.string.setting_auto_open, R.string.setting_auto_open_subtitle)
         configureToggleRow(rowStartOnBoot,  R.string.setting_start_on_boot,      0)
         configureToggleRow(rowDebugOverlay, R.string.setting_debug_overlay,      R.string.setting_debug_overlay_subtitle)
         configureToggleRow(rowForceHighRes, R.string.setting_force_high_res,      R.string.setting_force_high_res_subtitle)
@@ -158,6 +165,7 @@ class SettingsFragment : Fragment() {
         setToggle(rowAirPlay,      settings.airPlayEnabled)
         setToggle(rowMirrorAudio,  settings.mirrorAudioEnabled)
         setToggle(rowPinAuth,      settings.airPlayPinAuthEnabled)
+        setToggle(rowAutoOpen, settings.autoOpenOnConnect && Settings.canDrawOverlays(requireContext()))
         setToggle(rowStartOnBoot,  settings.startOnBoot)
         setToggle(rowDebugOverlay, settings.showDebugOverlay)
         setToggle(rowForceHighRes, settings.forceHighResolution)
@@ -180,6 +188,26 @@ class SettingsFragment : Fragment() {
         setToggleListener(rowAirPlay)      { enabled -> save { it.copy(airPlayEnabled = enabled) } }
         setToggleListener(rowMirrorAudio)  { enabled -> saveAndRestart { it.copy(mirrorAudioEnabled = enabled) } }
         setToggleListener(rowPinAuth)      { enabled -> saveAndRestart { it.copy(airPlayPinAuthEnabled = enabled) } }
+        setToggleListener(rowAutoOpen) { enabled ->
+            if (enabled && !Settings.canDrawOverlays(requireContext())) {
+                setToggle(rowAutoOpen, false)
+                AlertDialog.Builder(requireContext())
+                    .setTitle(R.string.setting_auto_open)
+                    .setMessage(R.string.setting_auto_open_permission)
+                    .setPositiveButton(android.R.string.ok) { _, _ ->
+                        val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:${requireContext().packageName}"))
+                        runCatching { startActivity(intent) }.onFailure {
+                            Toast.makeText(requireContext(), R.string.setting_auto_open_unavailable,
+                                Toast.LENGTH_LONG).show()
+                        }
+                    }
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show()
+            } else {
+                save { it.copy(autoOpenOnConnect = enabled) }
+            }
+        }
         setToggleListener(rowStartOnBoot)  { enabled -> save { it.copy(startOnBoot = enabled) } }
         setToggleListener(rowDebugOverlay) { enabled -> save { it.copy(showDebugOverlay = enabled) } }
         setToggleListener(rowForceHighRes) { enabled -> save { it.copy(forceHighResolution = enabled) } }
