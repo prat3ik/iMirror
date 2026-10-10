@@ -1,6 +1,7 @@
 package dev.imirror.receiver.airplay.handshake
 
 import android.view.Surface
+import android.graphics.SurfaceTexture
 import dev.imirror.receiver.airplay.StreamStats
 import dev.imirror.receiver.airplay.VideoDecoder
 import dev.imirror.receiver.util.Logger
@@ -10,8 +11,6 @@ import kotlinx.coroutines.launch
 import java.io.InputStream
 import java.net.ServerSocket
 import java.net.Socket
-import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.TimeUnit
 
 /**
  * MirrorStreamServer — receives and decodes the AirPlay 2 mirroring video stream.
@@ -38,22 +37,26 @@ class MirrorStreamServer(
     private val width: Int = 1920,
     private val height: Int = 1080,
 ) {
-    private sealed class Item
-    private class Config(val sps: ByteArray, val pps: ByteArray) : Item()
-    private class Frame(val annexB: ByteArray) : Item()
-
     private val cipher = MirrorCrypto.streamCipher(aesKey, ecdhSecret, streamConnectionId)
     private val serverSocket = ServerSocket(0)            // OS-assigned free port
-    private val queue = ArrayBlockingQueue<Item>(QUEUE_CAPACITY)
+    private var parkingTexture: SurfaceTexture? = null
+    private var parkingSurface: Surface? = null
+    private fun outputSurface(): Surface {
+        surfaceProvider()?.takeIf { it.isValid }?.let { return it }
+        return parkingSurface ?: SurfaceTexture(false).let { texture ->
+            parkingTexture = texture
+            Surface(texture).also { parkingSurface = it }
+        }
+    }
+
+    private val queue = MirrorFrameQueue(QUEUE_CAPACITY)
 
     @Volatile private var running = false
     @Volatile private var client: Socket? = null
     @Volatile private var decoder: VideoDecoder? = null   // owned by the decoder thread
     private var lastSps: ByteArray? = null
     private var lastPps: ByteArray? = null
-    // The Surface the current decoder was built against. The SurfaceView destroys its Surface when
-    // the app backgrounds and creates a NEW one on return, so we watch for the identity changing
-    // and rebuild the decoder — otherwise video stays black after foregrounding.
+    // Track the active output window and switch surfaces without flushing H.264 reference frames.
     @Volatile private var configuredSurface: Surface? = null
     private var framePtsUs = 0L
     private var framesIn = 0
@@ -103,9 +106,9 @@ class MirrorStreamServer(
                         // ALWAYS advance the AES-CTR keystream, in order, for every video payload —
                         // skipping any packet desyncs the keystream and corrupts all later frames.
                         val annexB = MirrorCrypto.avccToAnnexB(cipher.update(payload))
-                        if (annexB.isNotEmpty()) enqueue(Frame(annexB))
+                        if (annexB.isNotEmpty()) enqueue(annexB)
                     }
-                    1 -> parseConfig(payload)?.let { enqueue(it) }
+                    1 -> parseConfig(payload)?.let { queue.configure(it) }
                     else -> Logger.v("Mirror: ignoring payload type $payloadType ($payloadSize B)")
                 }
             }
@@ -118,11 +121,9 @@ class MirrorStreamServer(
     }
 
     /** Bounded enqueue — if the decoder is behind, drop the oldest item to keep latency bounded. */
-    private fun enqueue(item: Item) {
+    private fun enqueue(annexB: ByteArray) {
         framesIn++
-        if (!queue.offer(item)) {
-            queue.poll()
-            queue.offer(item)
+        if (queue.offer(annexB)) {
             framesDropped++
             awaitingKeyframe = true        // a frame was lost — resync the decoder at the next IDR
         }
@@ -137,13 +138,13 @@ class MirrorStreamServer(
         }
     }
 
-    private fun parseConfig(payload: ByteArray): Config? = try {
+    private fun parseConfig(payload: ByteArray): MirrorFrameQueue.Config? = try {
         val spsSize = ((payload[6].toInt() and 0xFF) shl 8) or (payload[7].toInt() and 0xFF)
         val sps = payload.copyOfRange(8, 8 + spsSize)
         val ppsLenOffset = 8 + spsSize + 1                   // skip the 1-byte PPS count
         val ppsSize = ((payload[ppsLenOffset].toInt() and 0xFF) shl 8) or
             (payload[ppsLenOffset + 1].toInt() and 0xFF)
-        Config(sps, payload.copyOfRange(ppsLenOffset + 2, ppsLenOffset + 2 + ppsSize))
+        MirrorFrameQueue.Config(sps, payload.copyOfRange(ppsLenOffset + 2, ppsLenOffset + 2 + ppsSize))
     } catch (e: Exception) {
         Logger.e("Mirror: failed to parse SPS/PPS", e); null
     }
@@ -152,46 +153,53 @@ class MirrorStreamServer(
     private fun runDecoder() {
         try {
             while (running) {
-                val item = queue.poll(200, TimeUnit.MILLISECONDS) ?: continue
-                when (item) {
-                    is Config -> configureDecoder(item.sps, item.pps)
-                    is Frame -> decodeFrame(item.annexB)
-                }
+                val frame = queue.poll() ?: continue
+                val config = frame.config ?: continue
+                configureDecoder(config.sps, config.pps)
+                decodeFrame(frame.annexB)
             }
         } catch (e: Exception) {
             if (running) Logger.e("Mirror decoder thread error", e)
         } finally {
             decoder?.release()
             decoder = null
+            parkingSurface?.release()
+            parkingTexture?.release()
+            parkingSurface = null
+            parkingTexture = null
         }
     }
 
     private fun configureDecoder(sps: ByteArray, pps: ByteArray) {
         // New SPS/PPS (or first config) — cache it and (re)build against the current surface.
         val d = decoder
-        val surface = awaitSurface()
-        if (d != null && d.isHealthy && sps.contentEquals(lastSps) && pps.contentEquals(lastPps) &&
-            surface === configuredSurface) return
+        if (d != null && d.isHealthy && sps.contentEquals(lastSps) && pps.contentEquals(lastPps)) return
+        val surface = outputSurface()
         lastSps = sps
         lastPps = pps
         rebuildDecoder(surface)
     }
 
     /**
-     * (Re)creates the decoder for [surface] from the cached SPS/PPS. Safe to call on a surface
-     * change (app background→foreground): releases the old decoder and resyncs at the next keyframe.
-     * If the surface or config isn't available yet, leaves the decoder null and retries on a later
-     * frame (frames are dropped until then).
+     * Creates the decoder from cached SPS/PPS. Used for a new format, an unhealthy decoder,
+     * or hardware that rejects setOutputSurface. Rebuilding requires the next keyframe.
      */
-    private fun rebuildDecoder(surface: Surface?) {
+    private fun rebuildDecoder(surface: Surface) {
         decoder?.release()
         decoder = null
         configuredSurface = surface
         val sps = lastSps ?: return
         val pps = lastPps ?: return
-        if (surface == null) return                            // backgrounded — wait for the surface to return
         val sc = MirrorCrypto.START_CODE
-        decoder = VideoDecoder(surface).also { it.initialize(sc + sps, sc + pps, width, height) }
+        decoder = VideoDecoder(surface).also {
+            try {
+                it.initialize(sc + sps, sc + pps, width, height)
+                it.switchOutputSurface(surface, surface !== parkingSurface)
+            } catch (e: Exception) {
+                it.release()
+                throw e
+            }
+        }
         awaitingKeyframe = true                                // a fresh decoder must start at an IDR
         StreamStats.videoRes = "${width}x${height}"
         Logger.i("Mirror decoder (re)built for surface (sps=${sps.size}B pps=${pps.size}B)")
@@ -200,15 +208,17 @@ class MirrorStreamServer(
     private fun decodeFrame(annexB: ByteArray) {
         // Re-attach to the live Surface if it changed (the app was backgrounded and returned, so the
         // SurfaceView made a new Surface). Without this, video stays black after foregrounding.
-        val liveSurface = surfaceProvider()
+        val liveSurface = outputSurface()
         if (liveSurface !== configuredSurface) {
-            Logger.i("Mirror: surface ${if (liveSurface == null) "lost" else "changed"} — re-attaching decoder")
-            rebuildDecoder(liveSurface)
+            Logger.i("Mirror: surface ${if (liveSurface === parkingSurface) "parked" else "changed"} — re-attaching decoder")
+            val switched = decoder?.takeIf { it.isHealthy }
+                ?.switchOutputSurface(liveSurface, liveSurface !== parkingSurface) == true
+            if (switched) configuredSurface = liveSurface else rebuildDecoder(liveSurface)
         }
         val d = decoder ?: return                              // need surface + SPS/PPS first
-        if (!d.isHealthy) {                                    // error state — drop, await next config
-            Logger.w("Mirror: decoder unhealthy — dropping, awaiting new SPS/PPS")
-            d.release(); decoder = null; configuredSurface = null; lastSps = null; lastPps = null
+        if (!d.isHealthy) {
+            Logger.w("Mirror: decoder unhealthy — retrying with cached SPS/PPS")
+            d.release(); decoder = null; configuredSurface = null
             return
         }
         if (awaitingKeyframe) {
@@ -237,16 +247,6 @@ class MirrorStreamServer(
         return false
     }
 
-    /** The streaming Surface appears shortly after CONNECTED is emitted; poll briefly. */
-    private fun awaitSurface(): Surface? {
-        repeat(SURFACE_WAIT_TRIES) {
-            if (!running) return null
-            surfaceProvider()?.let { return it }
-            try { Thread.sleep(SURFACE_WAIT_MS) } catch (_: InterruptedException) { return null }
-        }
-        return surfaceProvider()
-    }
-
     private fun readFully(input: InputStream, buf: ByteArray, len: Int): Boolean {
         var read = 0
         while (read < len) {
@@ -268,7 +268,5 @@ class MirrorStreamServer(
         private const val MAX_PAYLOAD = 8 * 1024 * 1024        // 8 MB sanity cap per frame
         private const val FRAME_INTERVAL_US = 1_000_000L / 60  // monotonic PTS hint (~60fps)
         private const val QUEUE_CAPACITY = 90                  // ~1.5s @60fps before dropping
-        private const val SURFACE_WAIT_TRIES = 50
-        private const val SURFACE_WAIT_MS = 100L
     }
 }

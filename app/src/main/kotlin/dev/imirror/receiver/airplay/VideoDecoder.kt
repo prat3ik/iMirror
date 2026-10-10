@@ -29,7 +29,26 @@ import dev.imirror.receiver.util.Logger
  *   decoder.decodeNalUnit(nalUnitBytes)                    // call for each video chunk
  *   decoder.release()                                       // call when done
  */
-class VideoDecoder(private val outputSurface: Surface) {
+class VideoDecoder(private var outputSurface: Surface) {
+
+    /** Decoder-thread only. Keep reference frames when the Activity changes its output window. */
+    private var renderOutput = true
+
+    fun switchOutputSurface(surface: Surface, render: Boolean): Boolean {
+        if (!surface.isValid) return false
+        return try {
+            if (surface !== outputSurface) {
+                val codec = mediaCodec ?: return false
+                codec.setOutputSurface(surface)
+                outputSurface = surface
+            }
+            renderOutput = render
+            true
+        } catch (e: Exception) {
+            Logger.w("Output surface switch failed: ${e.javaClass.simpleName}")
+            false
+        }
+    }
 
     // The underlying hardware decoder — null until initialize() is called
     private var mediaCodec: MediaCodec? = null
@@ -237,7 +256,7 @@ class VideoDecoder(private val outputSurface: Surface) {
                 // this Surface's BufferQueue holds only ~3 frames, so any hold quickly back-pressures the
                 // decoder → the upstream frame queue saturates → big latency + dropped (corrupt) frames.
                 // A/V alignment is handled by keeping the AUDIO path low-latency instead (AudioStreamServer).
-                codec.releaseOutputBuffer(outputBufferIndex, true)
+                codec.releaseOutputBuffer(outputBufferIndex, renderOutput && outputSurface.isValid)
             }
             outputBufferIndex = codec.dequeueOutputBuffer(bufferInfo, 0)
         }
@@ -270,14 +289,20 @@ class VideoDecoder(private val outputSurface: Surface) {
      */
     fun release() {
         Logger.d("Releasing VideoDecoder")
+        val codec = mediaCodec
+        mediaCodec = null
+        isInitialized = false
+        // stop() can fail after configure/start errors; release() must still run.
         try {
-            mediaCodec?.stop()
-            mediaCodec?.release()
+            codec?.stop()
         } catch (e: Exception) {
-            Logger.e("Error releasing MediaCodec (non-fatal)", e)
+            Logger.e("Error stopping MediaCodec (non-fatal)", e)
         } finally {
-            mediaCodec = null
-            isInitialized = false
+            try {
+                codec?.release()
+            } catch (e: Exception) {
+                Logger.e("Error releasing MediaCodec (non-fatal)", e)
+            }
         }
     }
 

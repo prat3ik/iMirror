@@ -120,4 +120,8 @@
     <string name="content_desc_cast_icon">Google Cast protocol icon</string>
     <string name="content_desc_status_dot">Status indicator</string>
 
+    <string name="setting_auto_open">Open incoming connections automatically</string>
+    <string name="setting_auto_open_subtitle">Bring iMirror to the screen when a new AirPlay connection starts</string>
+    <string name="setting_auto_open_permission">Android requires permission to display over other apps before iMirror can open from the background. iMirror does not draw an overlay. Grant the permission, return here, and enable this option again.</string>
+    <string name="setting_auto_open_unavailable">This device does not expose the required permission screen.</string>
 </resources>

@@ -29,6 +29,7 @@ import dev.imirror.receiver.ui.SettingsFragment
 import dev.imirror.receiver.ui.StreamingScreen
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
 import timber.log.Timber
 
 /**
@@ -66,6 +67,7 @@ class MainActivity : AppCompatActivity() {
     // Service binding — gives access to state flows for showing/hiding the streaming overlay
     private var service: MirrorService? = null
     private var isBound = false
+    private val overlayJobs = mutableListOf<Job>()
     private var currentAirPlayState = ProtocolState.DISABLED
     private var currentPhotoFrame: PhotoFrame? = null
     private var currentNowPlaying: NowPlayingInfo? = null
@@ -126,6 +128,8 @@ class MainActivity : AppCompatActivity() {
         super.onStop()
         // Clear surface reference before unbinding to avoid holding a dead Surface
         service?.setVideoSurfaceProvider { null }
+        overlayJobs.forEach { it.cancel() }
+        overlayJobs.clear()
         if (isBound) {
             unbindService(serviceConnection)
             isBound = false
@@ -340,30 +344,30 @@ class MainActivity : AppCompatActivity() {
      * Observes [MirrorService.airPlayState] and [MirrorService.photoFrame]
      * and shows the appropriate full-screen overlay.
      *
-     * Called once after the service is bound. The coroutine is automatically cancelled
-     * by [lifecycleScope] when the Activity stops.
+     * Called after each service bind. The collection jobs are explicitly cancelled in onStop;
+     * lifecycleScope alone is only cancelled on destruction, not on backgrounding.
      */
     private fun observeOverlayState() {
         val svc = service ?: return
-        lifecycleScope.launch {
+        overlayJobs += lifecycleScope.launch {
             svc.airPlayState.collectLatest { state ->
                 currentAirPlayState = state
                 updateOverlay()
             }
         }
-        lifecycleScope.launch {
+        overlayJobs += lifecycleScope.launch {
             svc.photoFrame.collectLatest { frame ->
                 currentPhotoFrame = frame
                 updateOverlay()
             }
         }
-        lifecycleScope.launch {
+        overlayJobs += lifecycleScope.launch {
             svc.nowPlaying.collectLatest { info ->
                 currentNowPlaying = info
                 updateOverlay()
             }
         }
-        lifecycleScope.launch {
+        overlayJobs += lifecycleScope.launch {
             svc.pairingPin.collectLatest { pin ->
                 currentPin = pin
                 updateOverlay()

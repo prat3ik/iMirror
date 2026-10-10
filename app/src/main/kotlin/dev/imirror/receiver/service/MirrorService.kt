@@ -10,6 +10,7 @@ import android.content.Intent
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import dev.imirror.receiver.MainActivity
 import dev.imirror.receiver.R
@@ -262,7 +263,24 @@ class MirrorService : Service() {
                 _pairingPin.value = pin
             },
             onStateChanged = { state ->
+                val wasConnected = _airPlayState.value == ProtocolState.CONNECTED
                 _airPlayState.value = state
+                if (state == ProtocolState.CONNECTED && !wasConnected) {
+                    serviceScope.launch(Dispatchers.Main) {
+                        val currentSettings = settingsRepository.settingsFlow.first()
+                        if (!currentSettings.autoOpenOnConnect ||
+                            _airPlayState.value != ProtocolState.CONNECTED) return@launch
+                        if (Settings.canDrawOverlays(this@MirrorService)) {
+                            runCatching {
+                                startActivity(Intent(this@MirrorService, MainActivity::class.java).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                                })
+                            }.onFailure { Logger.e("Unable to open mirror screen", it) }
+                        } else {
+                            Logger.w("Automatic mirror opening needs display-over-other-apps permission")
+                        }
+                    }
+                }
                 when (state) {
                     ProtocolState.CONNECTED   -> {
                         _photoFrame.value = null
