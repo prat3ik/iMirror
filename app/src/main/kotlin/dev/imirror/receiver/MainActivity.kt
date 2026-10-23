@@ -11,6 +11,7 @@ import android.os.IBinder
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import android.view.View
+import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -241,6 +242,7 @@ class MainActivity : AppCompatActivity() {
         streamingScreen.visibility = View.VISIBLE
         streamingContainer.visibility = View.VISIBLE
         streamingContainer.bringToFront()
+        setKeepScreenOn(true)
     }
 
     fun showPhotoScreen(photoFrame: PhotoFrame) {
@@ -251,6 +253,7 @@ class MainActivity : AppCompatActivity() {
             photoScreen.visibility = View.VISIBLE
             streamingContainer.visibility = View.VISIBLE
             streamingContainer.bringToFront()
+            setKeepScreenOn(true)
         }
     }
 
@@ -263,6 +266,7 @@ class MainActivity : AppCompatActivity() {
         nowPlayingScreen.visibility = View.VISIBLE
         streamingContainer.visibility = View.VISIBLE
         streamingContainer.bringToFront()
+        setKeepScreenOn(true)
     }
 
     /**
@@ -277,6 +281,17 @@ class MainActivity : AppCompatActivity() {
         pinScreen.visibility = View.GONE
         streamingScreen.visibility = View.VISIBLE
         streamingContainer.visibility = View.GONE
+        setKeepScreenOn(false)
+    }
+
+    /**
+     * Stops the TV's idle timer (screensaver / sleep) from kicking in while a sender is mirroring.
+     * The viewer controls playback from their phone, so the TV sees no remote input and would
+     * otherwise go to sleep after its idle timeout.
+     */
+    private fun setKeepScreenOn(keepOn: Boolean) {
+        if (keepOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
     /** Returns the SurfaceView Surface for the VideoDecoder. */
@@ -396,5 +411,6 @@ class MainActivity : AppCompatActivity() {
         pinScreen.visibility = View.VISIBLE
         streamingContainer.visibility = View.VISIBLE
         streamingContainer.bringToFront()
+        setKeepScreenOn(true)
     }
 }

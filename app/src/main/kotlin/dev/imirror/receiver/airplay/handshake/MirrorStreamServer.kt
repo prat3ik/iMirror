@@ -124,7 +124,8 @@ class MirrorStreamServer(
             queue.poll()
             queue.offer(item)
             framesDropped++
-            awaitingKeyframe = true        // a frame was lost — resync the decoder at the next IDR
+            // Don't wedge stream on dropped frame: AirPlay sender rarely sends IDR frames,
+            // so dropping all frames waiting for an IDR causes permanent screen freeze.
         }
         StreamStats.videoQueue = queue.size
         if (framesIn % 300 == 0) {
@@ -192,31 +193,41 @@ class MirrorStreamServer(
         if (surface == null) return                            // backgrounded — wait for the surface to return
         val sc = MirrorCrypto.START_CODE
         decoder = VideoDecoder(surface).also { it.initialize(sc + sps, sc + pps, width, height) }
-        awaitingKeyframe = true                                // a fresh decoder must start at an IDR
+        awaitingKeyframe = false                               // AirPlay sends IDR only on start; don't drop frames waiting
         StreamStats.videoRes = "${width}x${height}"
         Logger.i("Mirror decoder (re)built for surface (sps=${sps.size}B pps=${pps.size}B)")
     }
 
     private fun decodeFrame(annexB: ByteArray) {
-        // Re-attach to the live Surface if it changed (the app was backgrounded and returned, so the
-        // SurfaceView made a new Surface). Without this, video stays black after foregrounding.
+        // Re-attach to the live Surface if it changed (the app was backgrounded and returned, or TV turned on/off).
         val liveSurface = surfaceProvider()
         if (liveSurface !== configuredSurface) {
-            Logger.i("Mirror: surface ${if (liveSurface == null) "lost" else "changed"} — re-attaching decoder")
-            rebuildDecoder(liveSurface)
+            Logger.i("Mirror: surface ${if (liveSurface == null) "lost" else "changed"} — updating decoder")
+            val currentDecoder = decoder
+            if (liveSurface != null && currentDecoder != null && currentDecoder.isHealthy && currentDecoder.setOutputSurface(liveSurface)) {
+                configuredSurface = liveSurface
+                awaitingKeyframe = false
+                Logger.i("Mirror: dynamically updated output surface on active decoder")
+            } else if (liveSurface == null) {
+                // Surface destroyed (TV standby/off) — keep decoder alive but mark surface invalid to stop rendering
+                decoder?.isSurfaceValid = false
+                configuredSurface = null
+            } else {
+                rebuildDecoder(liveSurface)
+            }
         }
         val d = decoder ?: return                              // need surface + SPS/PPS first
-        if (!d.isHealthy) {                                    // error state — drop, await next config
-            Logger.w("Mirror: decoder unhealthy — dropping, awaiting new SPS/PPS")
-            d.release(); decoder = null; configuredSurface = null; lastSps = null; lastPps = null
+        if (!d.isHealthy) {                                    // error state — drop, await rebuild on next frame
+            Logger.w("Mirror: decoder unhealthy — dropping, attempting rebuild")
+            d.release(); decoder = null; configuredSurface = null
+            // CRITICAL: Do NOT wipe lastSps / lastPps here so rebuildDecoder can recover with the same configuration!
             return
         }
         if (awaitingKeyframe) {
-            // After a dropped frame the stream is reference-broken; skip until the next IDR so we
-            // don't feed the decoder predicted frames with missing references (which smear/blocky).
-            if (!isKeyframe(annexB)) return
-            awaitingKeyframe = false
-            Logger.i("Mirror: resynced on keyframe after a dropped frame")
+            if (isKeyframe(annexB)) {
+                awaitingKeyframe = false
+                Logger.i("Mirror: resynced on keyframe")
+            }
         }
         if (framePtsUs == 0L) Logger.i("Mirror: first video frame fed to decoder (${annexB.size}B)")
         d.decodeNalUnit(annexB, framePtsUs)
