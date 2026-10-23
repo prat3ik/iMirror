@@ -29,7 +29,7 @@ import dev.imirror.receiver.util.Logger
  *   decoder.decodeNalUnit(nalUnitBytes)                    // call for each video chunk
  *   decoder.release()                                       // call when done
  */
-class VideoDecoder(private val outputSurface: Surface) {
+class VideoDecoder(@Volatile private var outputSurface: Surface) {
 
     // The underlying hardware decoder — null until initialize() is called
     private var mediaCodec: MediaCodec? = null
@@ -37,6 +37,33 @@ class VideoDecoder(private val outputSurface: Surface) {
     // Track whether the decoder has been initialized (to prevent double-init)
     @Volatile
     private var isInitialized = false
+
+    /**
+     * Whether the output surface is currently attached and valid for rendering.
+     * When false, decoded frames are released without displaying to prevent IllegalStateException
+     * when the TV screen is turned off or in standby.
+     */
+    @Volatile
+    var isSurfaceValid: Boolean = true
+
+    /**
+     * Dynamically switches the output surface (e.g. when the TV turns back on).
+     * Supported in Android API 23+. Returns true if successful.
+     */
+    fun setOutputSurface(newSurface: Surface): Boolean {
+        return try {
+            val codec = mediaCodec ?: return false
+            codec.setOutputSurface(newSurface)
+            outputSurface = newSurface
+            isSurfaceValid = true
+            Logger.i("VideoDecoder: dynamically updated output surface")
+            true
+        } catch (e: Exception) {
+            Logger.e("VideoDecoder: setOutputSurface failed", e)
+            isHealthy = false
+            false
+        }
+    }
 
     /**
      * False once MediaCodec has thrown (entered an unrecoverable error state). The caller should
@@ -233,11 +260,10 @@ class VideoDecoder(private val outputSurface: Surface) {
                 // The decoder parsed the real size from the SPS — authoritative for aspect-fit.
                 publishOutputSize(codec.outputFormat)
             } else {
-                // Render immediately. We deliberately do NOT schedule a future render time for A/V sync:
-                // this Surface's BufferQueue holds only ~3 frames, so any hold quickly back-pressures the
-                // decoder → the upstream frame queue saturates → big latency + dropped (corrupt) frames.
-                // A/V alignment is handled by keeping the AUDIO path low-latency instead (AudioStreamServer).
-                codec.releaseOutputBuffer(outputBufferIndex, true)
+                // Render immediately if surface is valid. If the TV screen is off or standby,
+                // discard without rendering to avoid IllegalStateException on a dead surface.
+                val shouldRender = isSurfaceValid && outputSurface.isValid
+                codec.releaseOutputBuffer(outputBufferIndex, shouldRender)
             }
             outputBufferIndex = codec.dequeueOutputBuffer(bufferInfo, 0)
         }
